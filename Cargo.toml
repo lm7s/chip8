@@ -1,0 +1,8 @@
+[workspace]
+members = [
+    "chip8_core",
+]
+
+[workspace.dependencies]
+arrayvec = "0.7.6"
+rand = "0.8.5"
