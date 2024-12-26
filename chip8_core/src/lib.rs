@@ -55,7 +55,7 @@ pub struct Chip8 {
     delay_timer: u8,
     sound_timer: u8,
     v: [u8; 16],
-    should_redraw: bool,
+    pub should_redraw: bool,
     keypad: Keypad,
 }
 
@@ -108,9 +108,9 @@ impl Chip8 {
         let instruction = u16::from_be_bytes([self.memory[pc], self.memory[pc + 1]]);
         // decode instruction
         let nibbles = decode_instruction_into_nibbles(instruction);
-        let (x, y) = {
+        let (x, y, n) = {
             let [_, x, y, n] = nibbles;
-            (x as usize, y as usize)
+            (x as usize, y as usize, n)
         };
         let nn = (instruction & 0x00FF) as u8;
         let nnn = instruction & 0x0FFF;
@@ -119,9 +119,39 @@ impl Chip8 {
         // execute instruction
         let next_instruction = match nibbles {
             [0x0, 0x0, 0xE, 0x0] => self.execute_00e0(),
+            [0x0, 0x0, 0xE, 0xE] => self.execute_00ee(),
             [0x1, _, _, _] => self.execute_1nnn(nnn),
+            [0x2, _, _, _] => self.execute_2nnn(nnn),
+            [0x3, _, _, _] => self.execute_3xnn(x, nn),
+            [0x4, _, _, _] => self.execute_4xnn(x, nn),
+            [0x5, _, _, 0x0] => self.execute_5xy0(x, y),
             [0x6, _, _, _] => self.execute_6xnn(x, nn),
-
+            [0x7, _, _, _] => self.execute_7xnn(x, nn),
+            [0x8, _, _, 0x0] => self.execute_8xy0(x, y),
+            [0x8, _, _, 0x1] => self.execute_8xy1(x, y),
+            [0x8, _, _, 0x2] => self.execute_8xy2(x, y),
+            [0x8, _, _, 0x3] => self.execute_8xy3(x, y),
+            [0x8, _, _, 0x4] => self.execute_8xy4(x, y),
+            [0x8, _, _, 0x5] => self.execute_8xy5(x, y),
+            [0x8, _, _, 0x6] => self.execute_8xy6(x, y),
+            [0x8, _, _, 0x7] => self.execute_8xy7(x, y),
+            [0x8, _, _, 0xE] => self.execute_8xye(x, y),
+            [0xA, _, _, _] => self.execute_annn(nnn),
+            [0xB, _, _, _] => self.execute_bnnn(nnn),
+            [0xC, _, _, _] => self.execute_cxnn(x, nn),
+            [0xD, _, _, _] => self.execute_dxyn(x, y, n),
+            [0xE, _, 0x9, 0xE] => self.execute_ex9e(x),
+            [0xE, _, 0xA, 0x1] => self.execute_exa1(x),
+            [0xF, _, 0x0, 0x7] => self.execute_fx07(x),
+            [0xF, _, 0x1, 0x5] => self.execute_fx15(x),
+            [0xF, _, 0x1, 0x8] => self.execute_fx18(x),
+            [0xF, _, 0x1, 0xE] => self.execute_fx1e(x),
+            [0xF, _, 0x0, 0xA] => self.execute_fx0a(x),
+            [0xF, _, 0x2, 0x9] => self.execute_fx29(x),
+            [0xF, _, 0x3, 0x3] => self.execute_fx33(x),
+            [0xF, _, 0x5, 0x5] => self.execute_fx55(x),
+            [0xF, _, 0x6, 0x5] => self.execute_fx65(x),
+            [0x9, _, _, 0x0] => self.execute_9xy0(x, y),
             _ => todo!(),
         };
 
@@ -251,16 +281,45 @@ impl Chip8 {
     }
 
     // DXYN - Display and draw
-    // fn execute_dxyn(&mut self, x: usize, y: usize, n: u8) -> NextInstruction {
-    //     let x = self.v[x] % 64;
-    //     let y = self.v[y] % 32;
-    //     self.v[0xF] = 0;
+    fn execute_dxyn(&mut self, x: usize, y: usize, n: u8) -> NextInstruction {
+        // get X and Y coordinates
+        let x = self.v[x] % 64;
+        let y = self.v[y] % 32;
 
-    //     // for N rows
-    //     for row_index in (0..n) {
+        // reset the collision flag
+        self.v[0xF] = 0;
 
-    //     }
-    // }
+        // loop through each row of our sprite
+        for row_index in 0..n {
+            let sprite_byte = self.memory[self.i as usize + row_index as usize];
+            // if this is true, then we're overflowing the screen downwards - stop
+            if (y + row_index) >= PIXELS_PER_COLUMN as u8 {
+                break;
+            }
+            for column_index in 0..8 {
+                // if true, overflowing screen to the right - stop
+                if (x + row_index) >= PIXELS_PER_ROW as u8 {
+                    break;
+                }
+
+                // get the current bit
+                let sprite_pixel = (sprite_byte >> (7 - column_index)) >> 0b1;
+                let screen_index = ((y + row_index) * 64 + (x + column_index)) as usize;
+                let screen_pixel = self.screen[screen_index];
+
+                if sprite_pixel == 1 {
+                    if screen_pixel {
+                        // register collision
+                        self.v[0xF] = 1;
+                    }
+                    self.screen[screen_index] ^= true;
+                }
+            }
+        }
+
+        self.should_redraw = true;
+        NextInstruction::Next
+    }
 
     fn execute_ex9e(&mut self, x: usize) -> NextInstruction {
         NextInstruction::skip_if(self.keypad.current_frame_keys[self.v[x] as usize])
@@ -332,8 +391,6 @@ impl Chip8 {
         NextInstruction::Next
     }
 
-    
-
     fn execute_9xy0(&mut self, x: usize, y: usize) -> NextInstruction {
         NextInstruction::skip_if(self.v[x] != self.v[y])
     }
@@ -357,11 +414,11 @@ pub fn convert_to_binary_coded_decimal(num: u8) -> [u8; 3] {
 }
 
 pub fn point_from_index(index: usize) -> (usize, usize) {
-    (index % PIXELS_PER_ROW, index / PIXELS_PER_ROW)
+    (index / PIXELS_PER_ROW, index % PIXELS_PER_ROW)
 }
 
-pub fn index_from_point(x: usize, y: usize) -> usize {
-    x + y * PIXELS_PER_ROW
+pub fn index_from_point((i, j): (usize, usize)) -> usize {
+    i * PIXELS_PER_ROW + j
 }
 
 // write programs at 0x200
@@ -401,16 +458,31 @@ mod tests {
         }
     }
 
-    // #[test]
-    // fn point_is_correctly_converted_to_index() {
-    //     let test_cases = [
-    //         (0, ())
-    //     ]
+    #[test]
+    fn point_is_correctly_converted_to_index() {
+        let test_cases = [
+            (0, (0, 0)),
+            (1, (0, 1)),
+            (66, (1, 2)),
+            (2047, (31, 63)),
+        ];
 
-    //     for (test_case, expected_result) in 
-    // }
+        for (expected_result, test_case) in test_cases {
+            assert_eq!(index_from_point(test_case), expected_result);
+        }
+    }
 
+    #[test]
     fn index_is_correctly_converted_to_point() {
+        let test_cases = [
+            (0, (0, 0)),
+            (1, (0, 1)),
+            (66, (1, 2)),
+            (2047, (31, 63)),
+        ];
 
+        for (test_case, expected_result) in test_cases {
+            assert_eq!(point_from_index(test_case), expected_result);
+        }
     }
 }
