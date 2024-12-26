@@ -251,9 +251,16 @@ impl Chip8 {
     }
 
     // DXYN - Display and draw
-    fn execute_dxyn(&mut self, x: usize, y: usize, n: u8) -> NextInstruction {
-        todo!()
-    }
+    // fn execute_dxyn(&mut self, x: usize, y: usize, n: u8) -> NextInstruction {
+    //     let x = self.v[x] % 64;
+    //     let y = self.v[y] % 32;
+    //     self.v[0xF] = 0;
+
+    //     // for N rows
+    //     for row_index in (0..n) {
+
+    //     }
+    // }
 
     fn execute_ex9e(&mut self, x: usize) -> NextInstruction {
         NextInstruction::skip_if(self.keypad.current_frame_keys[self.v[x] as usize])
@@ -309,11 +316,23 @@ impl Chip8 {
         NextInstruction::Next
     }
 
-    // fn execute_fx55(&mut self, x: usize) -> NextInstruction {
-    //     for i in (0..=x) {
-    //         self.memory[]
-    //     }
-    // }
+    fn execute_fx55(&mut self, x: usize) -> NextInstruction {
+        let i = self.i as usize;
+        let memory_range = i..i + x + 1;
+        self.v[0..=x].copy_from_slice(&self.memory[memory_range]);
+        self.i = self.i + x as u16 + 1;
+        NextInstruction::Next
+    }
+
+    fn execute_fx65(&mut self, x: usize) -> NextInstruction {
+        let i = self.i as usize;
+        let memory_range = i..i + x + 1;
+        self.memory[memory_range].copy_from_slice(&self.v[0..=x]);
+        self.i = self.i + x as u16 + 1;
+        NextInstruction::Next
+    }
+
+    
 
     fn execute_9xy0(&mut self, x: usize, y: usize) -> NextInstruction {
         NextInstruction::skip_if(self.v[x] != self.v[y])
@@ -335,6 +354,14 @@ pub fn convert_to_binary_coded_decimal(num: u8) -> [u8; 3] {
     let decimals = (num - (hundreds * 100) - units) / 10;
 
     [hundreds, decimals, units]
+}
+
+pub fn point_from_index(index: usize) -> (usize, usize) {
+    (index % PIXELS_PER_ROW, index / PIXELS_PER_ROW)
+}
+
+pub fn index_from_point(x: usize, y: usize) -> usize {
+    x + y * PIXELS_PER_ROW
 }
 
 // write programs at 0x200
@@ -372,5 +399,18 @@ mod tests {
             println!("test case: {}", test_case);
             assert_eq!(convert_to_binary_coded_decimal(test_case), expected_result);
         }
+    }
+
+    // #[test]
+    // fn point_is_correctly_converted_to_index() {
+    //     let test_cases = [
+    //         (0, ())
+    //     ]
+
+    //     for (test_case, expected_result) in 
+    // }
+
+    fn index_is_correctly_converted_to_point() {
+
     }
 }
