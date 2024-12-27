@@ -1,0 +1,8 @@
+[package]
+name = "chip8_sdl2"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+sdl2.workspace = true
+chip8_core = { path = "../chip8_core" }

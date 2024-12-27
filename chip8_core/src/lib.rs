@@ -5,6 +5,8 @@ pub const PIXELS_PER_ROW: usize = 64;
 pub const PIXELS_PER_COLUMN: usize = 32;
 pub const PIXELS_PER_SCREEN: usize = PIXELS_PER_COLUMN * PIXELS_PER_ROW;
 pub const STACK_SIZE: usize = 16;
+pub const RAM_SIZE: usize = 4_096;
+
 const FONT_SET: &[u8] = &[
     0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
     0x20, 0x60, 0x20, 0x20, 0x70, // 1
@@ -21,13 +23,13 @@ const FONT_SET: &[u8] = &[
     0xF0, 0x80, 0x80, 0x80, 0xF0, // C
     0xE0, 0x90, 0x90, 0x90, 0xE0, // D
     0xF0, 0x80, 0xF0, 0x80, 0xF0, // E
-    0xF0, 0x80, 0xF0, 0x80, 0x80  // F
+    0xF0, 0x80, 0xF0, 0x80, 0x80, // F
 ];
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Keypad {
-    previous_frame_keys: [bool; 16],
-    current_frame_keys: [bool; 16],
+    pub previous_frame_keys: [bool; 16],
+    pub current_frame_keys: [bool; 16],
 }
 
 impl Keypad {
@@ -45,8 +47,8 @@ impl Keypad {
 }
 
 pub struct Chip8 {
-    memory: [u8; 512],
-    screen: [bool; PIXELS_PER_SCREEN],
+    memory: [u8; RAM_SIZE],
+    pub screen: [bool; PIXELS_PER_SCREEN],
     /// Program counter; the current instruction in memory
     pc: u16,
     /// Index register
@@ -56,7 +58,7 @@ pub struct Chip8 {
     sound_timer: u8,
     v: [u8; 16],
     pub should_redraw: bool,
-    keypad: Keypad,
+    pub keypad: Keypad,
 }
 
 enum NextInstruction {
@@ -79,7 +81,7 @@ impl NextInstruction {
 impl Chip8 {
     pub fn new() -> Self {
         let memory = {
-            let mut memory = [0; 512];
+            let mut memory = [0; RAM_SIZE];
             // write the font
             memory[0x50..0x50 + FONT_SET.len()].copy_from_slice(FONT_SET);
             memory
@@ -87,7 +89,7 @@ impl Chip8 {
         Self {
             memory,
             screen: [false; PIXELS_PER_SCREEN],
-            pc: 0,
+            pc: 0x200,
             i: 0,
             stack: ArrayVec::new(),
             delay_timer: 0,
@@ -98,8 +100,15 @@ impl Chip8 {
         }
     }
 
-    pub fn load_rom(&mut self, rom: &[u8]) {
-        self.memory[0x200..0x200 + rom.len()].copy_from_slice(rom);
+    pub fn load_rom(&mut self, rom: &'_ [u8]) {
+        let start = 0x200;
+        let end = 0x200 + rom.len();
+        println!(
+            "len memory = {l1}, len rom = {l2}",
+            l1 = self.memory[start..end].len(),
+            l2 = rom.len(),
+        );
+        self.memory[start..end].copy_from_slice(rom);
     }
 
     pub fn tick(&mut self) {
@@ -116,6 +125,7 @@ impl Chip8 {
         let nnn = instruction & 0x0FFF;
 
         self.pc += 2;
+        println!("next instruction = {:0X?}", nibbles);
         // execute instruction
         let next_instruction = match nibbles {
             [0x0, 0x0, 0xE, 0x0] => self.execute_00e0(),
@@ -166,6 +176,7 @@ impl Chip8 {
     // 00E0 - Clear screen
     fn execute_00e0(&mut self) -> NextInstruction {
         self.screen = [false; PIXELS_PER_SCREEN];
+        self.should_redraw = true;
         NextInstruction::Next
     }
 
@@ -214,17 +225,17 @@ impl Chip8 {
 
     fn execute_8xy1(&mut self, x: usize, y: usize) -> NextInstruction {
         self.v[x] |= self.v[y];
-        NextInstruction::Next 
+        NextInstruction::Next
     }
 
     fn execute_8xy2(&mut self, x: usize, y: usize) -> NextInstruction {
         self.v[x] &= self.v[y];
-        NextInstruction::Next 
+        NextInstruction::Next
     }
 
     fn execute_8xy3(&mut self, x: usize, y: usize) -> NextInstruction {
         self.v[x] ^= self.v[y];
-        NextInstruction::Next 
+        NextInstruction::Next
     }
 
     fn execute_8xy4(&mut self, x: usize, y: usize) -> NextInstruction {
@@ -242,6 +253,9 @@ impl Chip8 {
     }
 
     fn execute_8xy6(&mut self, x: usize, y: usize) -> NextInstruction {
+        // Put the value of VY into VX
+        // Shift VX 1 bit to the right
+        // Set VF to the bit that was shifted out
         self.v[x] = self.v[y];
         let rotated_bit = self.v[x] & 0x1;
         self.v[0xF] = rotated_bit;
@@ -283,40 +297,32 @@ impl Chip8 {
     // DXYN - Display and draw
     fn execute_dxyn(&mut self, x: usize, y: usize, n: u8) -> NextInstruction {
         // get X and Y coordinates
-        let x = self.v[x] % 64;
-        let y = self.v[y] % 32;
-
-        // reset the collision flag
+        let j = (self.v[x] % 64) as usize;
+        let i = (self.v[y] % 32) as usize;
         self.v[0xF] = 0;
 
-        // loop through each row of our sprite
-        for row_index in 0..n {
-            let sprite_byte = self.memory[self.i as usize + row_index as usize];
-            // if this is true, then we're overflowing the screen downwards - stop
-            if (y + row_index) >= PIXELS_PER_COLUMN as u8 {
-                break;
+        'outer: for column_index in 0..n as usize {
+            let pixel_i = i + column_index as usize;
+            if pixel_i >= PIXELS_PER_COLUMN {
+                break 'outer;
             }
-            for column_index in 0..8 {
-                // if true, overflowing screen to the right - stop
-                if (x + row_index) >= PIXELS_PER_ROW as u8 {
-                    break;
+            let sprite_byte = self.memory[self.i as usize + column_index];
+            'inner: for row_index in 0..8_usize {
+                let pixel_j = j + row_index;
+                if pixel_j >= PIXELS_PER_ROW {
+                    break 'inner;
                 }
-
-                // get the current bit
-                let sprite_pixel = (sprite_byte >> (7 - column_index)) >> 0b1;
-                let screen_index = ((y + row_index) * 64 + (x + column_index)) as usize;
-                let screen_pixel = self.screen[screen_index];
-
+                let sprite_pixel = (sprite_byte >> (7 - row_index)) & 0b1;
+                let pixel_index = pixel_i * PIXELS_PER_ROW + pixel_j;
+                let screen_pixel = self.screen[pixel_index];
                 if sprite_pixel == 1 {
-                    if screen_pixel {
-                        // register collision
+                    if screen_pixel == true {
                         self.v[0xF] = 1;
                     }
-                    self.screen[screen_index] ^= true;
+                    self.screen[pixel_index] ^= true;
                 }
             }
         }
-
         self.should_redraw = true;
         NextInstruction::Next
     }
@@ -344,7 +350,7 @@ impl Chip8 {
         NextInstruction::Next
     }
 
-    // TODO: implement altering VF on overflow above 0FFF 
+    // TODO: implement altering VF on overflow above 0FFF
     fn execute_fx1e(&mut self, x: usize) -> NextInstruction {
         self.i += self.v[x] as u16;
         NextInstruction::Next
@@ -367,15 +373,15 @@ impl Chip8 {
     }
 
     fn execute_fx33(&mut self, x: usize) -> NextInstruction {
-        let numbers = convert_to_binary_coded_decimal(x as u8);
-        
+        let numbers = convert_to_binary_coded_decimal(self.v[x]);
+
         // set
         let i = self.i as usize;
         self.memory[i..i + 3].copy_from_slice(&numbers);
         NextInstruction::Next
     }
 
-    fn execute_fx55(&mut self, x: usize) -> NextInstruction {
+    fn execute_fx65(&mut self, x: usize) -> NextInstruction {
         let i = self.i as usize;
         let memory_range = i..i + x + 1;
         self.v[0..=x].copy_from_slice(&self.memory[memory_range]);
@@ -383,7 +389,8 @@ impl Chip8 {
         NextInstruction::Next
     }
 
-    fn execute_fx65(&mut self, x: usize) -> NextInstruction {
+    // Store V0 to VX (inclusive) in memory
+    fn execute_fx55(&mut self, x: usize) -> NextInstruction {
         let i = self.i as usize;
         let memory_range = i..i + x + 1;
         self.memory[memory_range].copy_from_slice(&self.v[0..=x]);
@@ -426,7 +433,7 @@ pub fn index_from_point((i, j): (usize, usize)) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn instruction_nibbles_are_correctly_decoded() {
         let test_cases = [
@@ -436,7 +443,10 @@ mod tests {
         ];
 
         for (instruction, expected_result) in test_cases {
-            assert_eq!(decode_instruction_into_nibbles(instruction), expected_result);
+            assert_eq!(
+                decode_instruction_into_nibbles(instruction),
+                expected_result
+            );
         }
     }
 
@@ -460,12 +470,7 @@ mod tests {
 
     #[test]
     fn point_is_correctly_converted_to_index() {
-        let test_cases = [
-            (0, (0, 0)),
-            (1, (0, 1)),
-            (66, (1, 2)),
-            (2047, (31, 63)),
-        ];
+        let test_cases = [(0, (0, 0)), (1, (0, 1)), (66, (1, 2)), (2047, (31, 63))];
 
         for (expected_result, test_case) in test_cases {
             assert_eq!(index_from_point(test_case), expected_result);
@@ -474,12 +479,7 @@ mod tests {
 
     #[test]
     fn index_is_correctly_converted_to_point() {
-        let test_cases = [
-            (0, (0, 0)),
-            (1, (0, 1)),
-            (66, (1, 2)),
-            (2047, (31, 63)),
-        ];
+        let test_cases = [(0, (0, 0)), (1, (0, 1)), (66, (1, 2)), (2047, (31, 63))];
 
         for (test_case, expected_result) in test_cases {
             assert_eq!(point_from_index(test_case), expected_result);
