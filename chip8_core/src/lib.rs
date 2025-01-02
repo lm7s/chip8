@@ -1,3 +1,5 @@
+use std::cmp;
+
 use arrayvec::ArrayVec;
 use rand::Rng;
 
@@ -6,6 +8,8 @@ pub const PIXELS_PER_COLUMN: usize = 32;
 pub const PIXELS_PER_SCREEN: usize = PIXELS_PER_COLUMN * PIXELS_PER_ROW;
 pub const STACK_SIZE: usize = 16;
 pub const RAM_SIZE: usize = 4_096;
+pub const ROM_INITIAL_POSITION: usize = 0x200;
+pub const FONT_INITIAL_POSITION: usize = 0x50;
 
 const FONT_SET: &[u8] = &[
     0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
@@ -44,6 +48,12 @@ impl Keypad {
             .zip(self.current_frame_keys.into_iter())
             .position(|(was_pressed, is_pressed)| was_pressed && !is_pressed)
     }
+
+    fn first_pressed_keypress(&self) -> Option<usize> {
+        self.current_frame_keys
+            .into_iter()
+            .position(|is_pressed| is_pressed)
+    }
 }
 
 pub struct Chip8 {
@@ -59,6 +69,11 @@ pub struct Chip8 {
     v: [u8; 16],
     pub should_redraw: bool,
     pub keypad: Keypad,
+}
+
+enum Platforms {
+    CosmacVip,
+    Amiga,
 }
 
 enum NextInstruction {
@@ -83,7 +98,7 @@ impl Chip8 {
         let memory = {
             let mut memory = [0; RAM_SIZE];
             // write the font
-            memory[0x50..0x50 + FONT_SET.len()].copy_from_slice(FONT_SET);
+            memory[FONT_INITIAL_POSITION..FONT_INITIAL_POSITION + FONT_SET.len()].copy_from_slice(FONT_SET);
             memory
         };
         Self {
@@ -103,11 +118,6 @@ impl Chip8 {
     pub fn load_rom(&mut self, rom: &'_ [u8]) {
         let start = 0x200;
         let end = 0x200 + rom.len();
-        println!(
-            "len memory = {l1}, len rom = {l2}",
-            l1 = self.memory[start..end].len(),
-            l2 = rom.len(),
-        );
         self.memory[start..end].copy_from_slice(rom);
     }
 
@@ -125,7 +135,6 @@ impl Chip8 {
         let nnn = instruction & 0x0FFF;
 
         self.pc += 2;
-        println!("next instruction = {:0X?}", nibbles);
         // execute instruction
         let next_instruction = match nibbles {
             [0x0, 0x0, 0xE, 0x0] => self.execute_00e0(),
@@ -225,16 +234,19 @@ impl Chip8 {
 
     fn execute_8xy1(&mut self, x: usize, y: usize) -> NextInstruction {
         self.v[x] |= self.v[y];
+        self.v[0xF] = 0;
         NextInstruction::Next
     }
 
     fn execute_8xy2(&mut self, x: usize, y: usize) -> NextInstruction {
         self.v[x] &= self.v[y];
+        self.v[0xF] = 0;
         NextInstruction::Next
     }
 
     fn execute_8xy3(&mut self, x: usize, y: usize) -> NextInstruction {
         self.v[x] ^= self.v[y];
+        self.v[0xF] = 0;
         NextInstruction::Next
     }
 
@@ -258,8 +270,8 @@ impl Chip8 {
         // Set VF to the bit that was shifted out
         self.v[x] = self.v[y];
         let rotated_bit = self.v[x] & 0x1;
-        self.v[0xF] = rotated_bit;
         self.v[x] >>= 1;
+        self.v[0xF] = rotated_bit;
         NextInstruction::Next
     }
 
@@ -272,9 +284,9 @@ impl Chip8 {
 
     fn execute_8xye(&mut self, x: usize, y: usize) -> NextInstruction {
         self.v[x] = self.v[y];
-        let rotated_bit = (self.v[x] & 0b1000_0000) >> 7;
-        self.v[0xF] = rotated_bit;
+        let rotated_bit = (self.v[x] >> 7) & 0b1;
         self.v[x] <<= 1;
+        self.v[0xF] = rotated_bit;
         NextInstruction::Next
     }
 
@@ -297,23 +309,23 @@ impl Chip8 {
     // DXYN - Display and draw
     fn execute_dxyn(&mut self, x: usize, y: usize, n: u8) -> NextInstruction {
         // get X and Y coordinates
-        let j = (self.v[x] % 64) as usize;
+        println!("x = {}, y = {}, n = {}", x, y, n);
         let i = (self.v[y] % 32) as usize;
+        let j = (self.v[x] % 64) as usize;
         self.v[0xF] = 0;
 
-        'outer: for column_index in 0..n as usize {
-            let pixel_i = i + column_index as usize;
-            if pixel_i >= PIXELS_PER_COLUMN {
-                break 'outer;
-            }
-            let sprite_byte = self.memory[self.i as usize + column_index];
-            'inner: for row_index in 0..8_usize {
-                let pixel_j = j + row_index;
-                if pixel_j >= PIXELS_PER_ROW {
-                    break 'inner;
-                }
-                let sprite_pixel = (sprite_byte >> (7 - row_index)) & 0b1;
-                let pixel_index = pixel_i * PIXELS_PER_ROW + pixel_j;
+        println!("i = {}, j = {}", i, j);
+
+        let end_downwards = cmp::min(i + n as usize, 32);
+        let end_to_right = cmp::min(j + 8, 64);
+
+        println!("end_downwards = {}, end_to_right = {}", end_downwards, end_to_right);
+
+        for (column_iter, column_index) in (i..end_downwards).enumerate() {
+            let sprite_byte = self.memory[self.i as usize + column_iter];
+            for (row_iter, row_index) in (j..end_to_right).enumerate() {
+                let sprite_pixel = (sprite_byte >> (7 - row_iter)) & 0b1;
+                let pixel_index = column_index * PIXELS_PER_ROW + row_index;
                 let screen_pixel = self.screen[pixel_index];
                 if sprite_pixel == 1 {
                     if screen_pixel == true {
@@ -323,6 +335,7 @@ impl Chip8 {
                 }
             }
         }
+
         self.should_redraw = true;
         NextInstruction::Next
     }
@@ -357,7 +370,7 @@ impl Chip8 {
     }
 
     fn execute_fx0a(&mut self, x: usize) -> NextInstruction {
-        if let Some(key) = self.keypad.first_released_keypress() {
+        if let Some(key) = self.keypad.first_pressed_keypress() {
             self.v[x] = key as u8;
             NextInstruction::Next
         } else {
@@ -368,7 +381,7 @@ impl Chip8 {
     fn execute_fx29(&mut self, x: usize) -> NextInstruction {
         let vx = self.v[x];
         let offset = vx * 5;
-        self.i = 0x200 + offset as u16;
+        self.i = FONT_INITIAL_POSITION as u16 + offset as u16;
         NextInstruction::Next
     }
 
@@ -378,6 +391,7 @@ impl Chip8 {
         // set
         let i = self.i as usize;
         self.memory[i..i + 3].copy_from_slice(&numbers);
+        self.i = self.i + x as u16 + 1;
         NextInstruction::Next
     }
 
@@ -463,7 +477,6 @@ mod tests {
         ];
 
         for (test_case, expected_result) in test_cases {
-            println!("test case: {}", test_case);
             assert_eq!(convert_to_binary_coded_decimal(test_case), expected_result);
         }
     }

@@ -12,6 +12,9 @@ const SQUARE_SIZE: u32 = 20;
 const SCREEN_WIDTH: u32 = PIXELS_PER_ROW as u32 * SQUARE_SIZE;
 const SCREEN_HEIGHT: u32 = PIXELS_PER_COLUMN as u32 * SQUARE_SIZE;
 
+const CATPPUCCIN_MOCHA_BASE: Color = Color::RGB(30, 30, 46);
+const CATPPUCCIN_MOCHA_YELLOW: Color = Color::RGB(249, 226, 175);
+
 fn main() {
     let sdl_context = sdl2::init().unwrap();
     let video_subsystem = sdl_context.video().unwrap();
@@ -22,21 +25,20 @@ fn main() {
         .unwrap();
     let mut canvas = window.into_canvas().build().unwrap();
 
-    // let blue_latte = Color::RGB(30, 102, 245);
-    let base_mocha = Color::RGB(30, 30, 46);
-    let yellow_mocha = Color::RGB(249, 226, 175);
-    canvas.set_draw_color(base_mocha);
+    
+    canvas.set_draw_color(CATPPUCCIN_MOCHA_BASE);
     canvas.clear();
     canvas.present();
     let mut event_pump = sdl_context.event_pump().unwrap();
     let mut chip8 = Chip8::new();
-    let instructions_per_frame = 3;
+    let instructions_per_frame = 5;
     let rom =
-            std::fs::read("/home/flynn/开发者/开发中/chip8/ROMs/test/4-flags.ch8").unwrap();
+            // std::fs::read("/mnt/Demoiselle/游戏/ROMs/CHIP-8/games/Pong (1 player).ch8").unwrap();
+            std::fs::read("./ROMs/test/5-quirks.ch8").unwrap();
     chip8.load_rom(&rom);
     'running: loop {
         // Parse events
-        let mut new_frame_keys = [false; 16];
+        let mut new_frame_keys = chip8.keypad.current_frame_keys;
         for event in event_pump.poll_iter() {
             match event {
                 Event::Quit { .. }
@@ -54,27 +56,35 @@ fn main() {
                         new_frame_keys[key] = true;
                     }
                 }
+                Event::KeyUp {
+                    scancode: Some(scancode),
+                    ..
+                } => {
+                    if let Some(key) = get_keypad_button_from_scancode(scancode) {
+                        new_frame_keys[key] = false;
+                    }
+                }
                 _ => {}
             }
         }
 
         // Update keys
-        println!("previous keys = {:?}, new keys = {:?}", chip8.keypad.current_frame_keys, new_frame_keys);
         chip8.keypad.update_keys(new_frame_keys);
 
+        
         // Tick emulator
-        for _ in 1..=16 {
+        for _ in 0..instructions_per_frame {
             chip8.tick();
         }
 
         // Draw screen if needed
         if chip8.should_redraw {
             // Clear screen
-            canvas.set_draw_color(base_mocha);
+            canvas.set_draw_color(CATPPUCCIN_MOCHA_BASE);
             canvas.clear();
 
-            // Make draw loop
-            canvas.set_draw_color(yellow_mocha);
+            // Draw pixels
+            canvas.set_draw_color(CATPPUCCIN_MOCHA_YELLOW);
             chip8
                 .screen
                 .into_iter()
@@ -84,6 +94,8 @@ fn main() {
                     let rect = get_rect_dimensions_from_index(index);
                     canvas.fill_rect(rect).unwrap();
                 });
+
+            // Don't draw again until requested 
             chip8.should_redraw = false;
         }
         
@@ -91,8 +103,8 @@ fn main() {
         canvas.present();
 
         // Sleep
-        std::thread::sleep(Duration::from_nanos(1_000_000_000 / 60));
-    }
+        std::thread::sleep(Duration::from_secs_f64(1.0 / 60.0));
+    };
 }
 
 fn get_rect_dimensions_from_index(index: usize) -> Rect {
